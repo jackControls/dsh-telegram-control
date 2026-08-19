@@ -107,3 +107,22 @@ export function parseBotCommand(text: string): ParsedBotCommand | undefined {
     rawInput: match[2] === undefined ? '' : match[2].trim(),
   }
 }
+
+/** One parsed approval-button callback: which choice and which request token. */
+export interface ParsedApprovalCallback {
+  /** Whether the button granted (`approve`) or denied (`reject`) the request. */
+  approve: boolean
+  /** The random request token embedded in the button's callback_data. */
+  token: string
+}
+
+/**
+ * Parse an inline-button callback for an approval request.
+ * @param data - the raw `callback_data` from a Telegram callback query.
+ * @returns the parsed choice, or `undefined` for stale or malformed data.
+ */
+export function parseApprovalCallback(data: string): ParsedApprovalCallback | undefined {
+  const match = /^(approve|reject):([0-9a-f-]+)$/.exec(data)
+  if (match === null) return undefined
+  return { approve: match[1] === 'approve', token: match[2] ?? '' }
+}

@@ -4,7 +4,7 @@
  */
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { escapeHtml, homeShorten, parseBotCommand, renderUptime, splitMessage, trimReasoning } from '../lib/format.js'
+import { escapeHtml, homeShorten, parseApprovalCallback, parseBotCommand, renderUptime, splitMessage, trimReasoning } from '../lib/format.js'
 
 test('escapeHtml escapes HTML metacharacters', () => {
   assert.equal(escapeHtml('<b>&"quoted"</b>'), '&lt;b&gt;&amp;&quot;quoted&quot;&lt;/b&gt;')
@@ -102,4 +102,16 @@ test('trimReasoning hard-cuts when no sentence boundary fits', () => {
 test('trimReasoning suppresses reasoning at cap 0', () => {
   assert.equal(trimReasoning('anything at all', 0), '')
   assert.equal(trimReasoning('anything at all', -5), '')
+})
+
+test('parseApprovalCallback parses approve and reject buttons', () => {
+  assert.deepEqual(parseApprovalCallback('approve:abc-123'), { approve: true, token: 'abc-123' })
+  assert.deepEqual(parseApprovalCallback('reject:abc-123'), { approve: false, token: 'abc-123' })
+})
+
+test('parseApprovalCallback rejects stale or malformed data', () => {
+  assert.equal(parseApprovalCallback('unknown'), undefined)
+  assert.equal(parseApprovalCallback('approve:'), undefined)
+  assert.equal(parseApprovalCallback('Approve:abc'), undefined)
+  assert.equal(parseApprovalCallback(''), undefined)
 })

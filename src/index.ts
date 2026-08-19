@@ -35,7 +35,7 @@ import {
   type TelegramCallbackQuery,
   type TelegramUpdate,
 } from './client.ts'
-import { escapeHtml, homeShorten, parseBotCommand, renderUptime, splitMessage, trimReasoning } from './format.ts'
+import { escapeHtml, homeShorten, parseApprovalCallback, parseBotCommand, renderUptime, splitMessage, trimReasoning } from './format.ts'
 
 export const name = 'telegram-control'
 export const inject = ['agents', 'sessions']
@@ -508,13 +508,12 @@ export function apply(ctx: Context, config: Config): void {
       await client.answerCallbackQuery(query.id, 'no action')
       return
     }
-    const match = /^(approve|reject):([0-9a-f-]+)$/.exec(data)
-    if (match === null) {
+    const parsed = parseApprovalCallback(data)
+    if (parsed === undefined) {
       await client.answerCallbackQuery(query.id, 'stale button')
       return
     }
-    const approve = match[1] === 'approve'
-    const token = match[2]!
+    const { approve, token } = parsed
     const entry = pendingApprovals.get(token)
     if (entry === undefined) {
       await client.answerCallbackQuery(query.id, 'request already settled')
