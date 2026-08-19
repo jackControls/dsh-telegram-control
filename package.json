@@ -80,6 +80,9 @@
   },
   "scripts": {
     "build": "tsc",
+    "check": "tsc --noEmit",
+    "test": "node --test 'tests/*.test.mjs'",
+    "test:smoke": "node tests/smoke.mjs",
     "prepublishOnly": "tsc"
   }
 }
