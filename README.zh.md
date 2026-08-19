@@ -121,8 +121,13 @@ session 标题（`session/title` 事件——自动总结或你手动改的名�
 
 ## 安全
 
-- 这个 bot 本质上是你的 harness 的**远程遥控器**：只有 `allowedChatIds`（或
-  `DSH_TELEGRAM_ALLOWED_CHATS`）里的 chat 能下命令。白名单务必收紧。
+- **每条入站消息在采取任何动作前都会先做授权校验**：处理前把 chat id 与 `allowedChatIds`
+  （或 `DSH_TELEGRAM_ALLOWED_CHATS`）比对——未列出的 chat 不会执行任何命令、不会向 agent
+  投递任何消息、也不会被接受任何审批答复。仅存储/记录 userId 不构成授权。
+- **空白名单 = 拒绝所有人**（fail closed）：没有配置任何 chat id 时，所有消息都被拒绝，
+  未授权 chat 唯一能收到的回复是告诉它自己 chat id 的引导提示。
+- 这个 bot 本质上是你的 harness 的**远程遥控器**：只有白名单内的 chat 能下命令或应答审批。
+  白名单务必收紧。
 - token 是凭据：优先用环境变量，别写进提交到仓库的 patch 文件。
 - 插件不会放大 harness 的任何能力——它只能做你的 harness 本身能做的事，harness 的
   sandbox / 审批策略对 agent 执行的工作依然生效。

@@ -133,8 +133,15 @@ rename, the same names the Web UI shows); the bracketed workspace is the session
 
 ## Security
 
-- The bot is a **remote shell into your harness** by design: only chats listed in
-  `allowedChatIds` (or `DSH_TELEGRAM_ALLOWED_CHATS`) may issue commands. Keep the allowlist tight.
+- **Every inbound message is authorized before any action.** Each update's chat id is checked
+  against `allowedChatIds` (or `DSH_TELEGRAM_ALLOWED_CHATS`) before anything is dispatched: no
+  commands run, no messages reach an agent, and no approval answers are accepted for an
+  unlisted chat. A stored `userId` is never treated as authorization.
+- **An empty allowlist denies everyone** (fail closed): with no chat id configured, every
+  message is rejected and the only reply an unlisted chat ever receives is the onboarding hint
+  that tells it its own chat id.
+- The bot is a **remote shell into your harness** by design: only listed chats may issue
+  commands or answer approvals. Keep the allowlist tight.
 - The token is a bearer credential: prefer the environment variable over a committed patch file.
 - The plugin does not widen any harness capability — it can only do what your running harness can
   do, and the harness's own sandbox/approval policies still apply to agent work.
