@@ -1,0 +1,19 @@
+# dsh-telegram-control bundle patch: mounted automatically when this package is
+# installed into a profile (`dsh plugin add dsh-telegram-control`). The plugin
+# reads its token and chat allowlist from the environment when config leaves
+# them unset, so no secret needs to live in a file:
+#
+#   DSH_TELEGRAM_TOKEN         the Telegram bot token
+#   DSH_TELEGRAM_ALLOWED_CHATS comma-separated authorized chat ids
+#
+# To pin values in the profile instead, add them to the row's config:
+#
+#   - insert:
+#       - id: telegram-control
+#         name: 'dsh-telegram-control'
+#         config:
+#           token: '123456:ABC-DEF'
+#           allowedChatIds: [123456789]
+- insert:
+    - id: telegram-control
+      name: 'dsh-telegram-control'
