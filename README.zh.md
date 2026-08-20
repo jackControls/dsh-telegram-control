@@ -15,6 +15,12 @@ dsh 里一切都是插件——这是一个 Cordis 函数插件，用长轮询�
   在它自己的回合（turn）结束时立刻回传（按 turn 追踪，不依赖 agent 进入 idle）。
 - **命令面**：`/status`、`/agents`、`/agent <session id>`、`/jobs`、`/kill <job id>`、
   `/cancel`、`/watch` / `/unwatch`、`/chatid`、`/help`。
+- **手机审批**：harness 的权限请求（沙箱升级等 `approval/request`）会以带 **✅ 允许一次 /
+  ❌ 拒绝** 内联按钮的消息发到 Telegram；点击即生效并把结果回写原消息。Telegram 不可达时
+  回退到 Web 对话框，不会 fail-closed。
+- **提问也上手机**：`ask_user_question` 类提问（计划评审、选项确认）会带选项按钮转发到
+  Telegram，Telegram 的回答与 Web 对话框竞争、先到先得。审批与提问提示都会无条件出现在
+  Telegram（无论桌面当前聚焦在哪）。
 - **实时推送**：`/watch` 开启后，所有 live session 的 assistant 消息都会转发到你的 chat。
 - **白名单鉴权**：未授权 chat 只会收到一条提示（里面带上它自己的 chat id），其余全部忽略。
 - **输出安全**：所有动态文本在发往 Telegram 前做 HTML 转义；超长回复自动分片。
