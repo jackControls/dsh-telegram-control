@@ -45,6 +45,7 @@ const tgQueue = [] // updates still to deliver
 const tgSent = [] // sendMessage payloads
 const tgActions = []
 const tgApprovals = [] // approval messages with buttons
+const tgQuestions = [] // question messages with buttons
 const tgCallbackAnswers = [] // answerCallbackQuery payloads
 const tgEdits = [] // editMessageText payloads
 const tgCommands = [] // setMyCommands payloads
@@ -68,9 +69,10 @@ const tgServer = http.createServer((req, res) => {
       const payload = JSON.parse(body)
       tgSent.push(payload)
       const messageId = tgSent.length
-      // Auto-press the first "approve" button of any approval message.
-      const approveButton = (payload.reply_markup?.inline_keyboard ?? []).flat()
-        .find(b => b.callback_data?.startsWith('approve:'))
+      // Auto-press the first "approve" button of any approval message and the
+      // first option button of any forwarded question.
+      const buttons = (payload.reply_markup?.inline_keyboard ?? []).flat()
+      const approveButton = buttons.find(b => b.callback_data?.startsWith('approve:'))
       if (approveButton !== undefined) {
         tgApprovals.push(payload)
         setTimeout(() => {
@@ -84,6 +86,22 @@ const tgServer = http.createServer((req, res) => {
             },
           })
         }, 400)
+      } else {
+        const questionButton = buttons.find(b => b.callback_data?.startsWith('question:'))
+        if (questionButton !== undefined) {
+          tgQuestions.push(payload)
+          setTimeout(() => {
+            tgQueue.push({
+              update_id: 20_000 + tgQuestions.length,
+              callback_query: {
+                id: `qb-${tgQuestions.length}`,
+                from: { id: CHAT_ID },
+                message: { message_id: messageId, chat: { id: CHAT_ID } },
+                data: questionButton.callback_data,
+              },
+            })
+          }, 400)
+        }
       }
       json(200, { ok: true, result: { message_id: messageId } })
     })
@@ -142,11 +160,15 @@ const llmServer = http.createServer((req, res) => {
       ? lastUser.content
       : (Array.isArray(lastUser?.content) ? lastUser.content.map(p => p.text ?? '').join('') : '')
     const wantsApproval = lastUserText.includes('run approval test')
+    const wantsQuestion = lastUserText.includes('run question test')
     const toolCallArgs = JSON.stringify({
       command: 'echo hi > /tmp/tg-approval-smoke',
       description: 'run approval smoke test',
       sandbox_permissions: 'workspace-write',
       justification: 'smoke test approval flow',
+    })
+    const questionCallArgs = JSON.stringify({
+      questions: [{ id: 'q1', question: 'Approve the smoke plan?', options: [{ label: 'Yes' }, { label: 'No' }] }],
     })
     if (payload.stream !== false) {
       res.writeHead(200, { 'content-type': 'text/event-stream' })
@@ -155,7 +177,12 @@ const llmServer = http.createServer((req, res) => {
           { id: 'mock-tc-1', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] },
           { id: 'mock-tc-2', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'bash', arguments: toolCallArgs } }] }, finish_reason: 'tool_calls' }] },
         ]
-        : [
+        : wantsQuestion
+          ? [
+            { id: 'mock-q-1', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] },
+            { id: 'mock-q-2', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_2', type: 'function', function: { name: 'ask_user_question', arguments: questionCallArgs } }] }, finish_reason: 'tool_calls' }] },
+          ]
+          : [
           { id: 'mock-0', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { reasoning_content: 'Let me think carefully about this request.' }, finish_reason: null }] },
           { id: 'mock-1', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] },
           { id: 'mock-2', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { content }, finish_reason: null }] },
@@ -394,6 +421,23 @@ try {
   check('phase C: approval message edited with the outcome', tgEdits.some(m => m.text.includes('Approved')))
   ok = ok && await waitFor(child, bootLog, () => llmRequests.length >= llmBeforeApproval + 1, 'the post-approval model call')
   check('phase C: approved tool call continued the turn', llmRequests.length >= llmBeforeApproval + 1)
+
+  // ---- phase C2: user-question round-trip ----
+  const llmBeforeQuestion = llmRequests.length
+  tgQueue.push(
+    { update_id: 202, message: { message_id: 202, chat: { id: CHAT_ID, type: 'private' }, from: { id: CHAT_ID }, text: 'run question test', date: 0 } },
+  )
+  ok = ok && await waitFor(child, bootLog, () => tgQuestions.length >= 1, 'the question to reach Telegram')
+  const questionMsg = tgQuestions[0]
+  check('phase C2: question forwarded to Telegram', questionMsg !== undefined
+    && questionMsg.text.includes('Question') && questionMsg.text.includes('Approve the smoke plan'))
+  check('phase C2: question carries option buttons', questionMsg !== undefined
+    && questionMsg.reply_markup?.inline_keyboard?.flat().some(b => b.callback_data?.startsWith('question:')))
+  ok = ok && await waitFor(child, bootLog, () => tgCallbackAnswers.some(a => a.text === '已选择'), 'the question callback to be answered')
+  check('phase C2: question callback answered', tgCallbackAnswers.some(a => a.text === '已选择'))
+  check('phase C2: question message edited with the answer', tgEdits.some(m => m.text.includes('已选择')))
+  ok = ok && await waitFor(child, bootLog, () => llmRequests.length >= llmBeforeQuestion + 1, 'the post-question model call')
+  check('phase C2: answered question continued the turn', llmRequests.length >= llmBeforeQuestion + 1)
 } finally {
   if (child !== undefined) child.kill('SIGTERM')
   await new Promise((resolve) => child?.once('exit', resolve))

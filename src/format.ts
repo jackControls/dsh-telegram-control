@@ -126,3 +126,21 @@ export function parseApprovalCallback(data: string): ParsedApprovalCallback | un
   if (match === null) return undefined
   return { approve: match[1] === 'approve', token: match[2] ?? '' }
 }
+
+/** One parsed question-button callback: the request token and the option index. */
+export interface ParsedQuestionCallback {
+  token: string
+  /** Index into the question's `options` array that was pressed. */
+  optionIndex: number
+}
+
+/**
+ * Parse an inline-button callback for a forwarded user question.
+ * @param data - the raw `callback_data` from a Telegram callback query.
+ * @returns the parsed choice, or `undefined` for stale or malformed data.
+ */
+export function parseQuestionCallback(data: string): ParsedQuestionCallback | undefined {
+  const match = /^question:([0-9a-f-]+):(\d+)$/.exec(data)
+  if (match === null) return undefined
+  return { token: match[1] ?? '', optionIndex: Number(match[2]) }
+}

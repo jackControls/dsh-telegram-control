@@ -28,6 +28,7 @@ import { SessionId, type Session, type SessionEvent, type SessionHeader } from '
 import type { SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
 import { foldSessionTitle } from '@deepseek-ai/dsh-session-title'
 import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval'
+import type { AskUserQuestionAnswer, AskUserQuestionItem, AskUserQuestionRequest } from '@deepseek-ai/dsh-user-questions'
 import {
   TelegramApiError,
   TelegramClient,
@@ -35,7 +36,7 @@ import {
   type TelegramCallbackQuery,
   type TelegramUpdate,
 } from './client.ts'
-import { escapeHtml, homeShorten, parseApprovalCallback, parseBotCommand, renderUptime, splitMessage, trimReasoning } from './format.ts'
+import { escapeHtml, homeShorten, parseApprovalCallback, parseBotCommand, parseQuestionCallback, renderUptime, splitMessage, trimReasoning } from './format.ts'
 
 export const name = 'telegram-control'
 export const inject = ['agents', 'sessions']
@@ -139,6 +140,20 @@ interface PendingApproval {
   text: string
   /** The chats and message ids the request was forwarded to. */
   sent: { chatId: number; messageId: number }[]
+  /** Clears the pending timer. */
+  timeoutDispose: () => void
+}
+
+/** One Telegram-forwarded user question awaiting a button press. */
+interface PendingQuestion {
+  /** Settles the wrapped `userQuestions.ask` with the chosen option. */
+  resolve: (answer: AskUserQuestionAnswer) => void
+  /** The original message text, so the answer can be edited back in. */
+  text: string
+  /** The chats and message ids the question was forwarded to. */
+  sent: { chatId: number; messageId: number }[]
+  /** The question's options, for mapping a button press to its label. */
+  items: { id: string; label: string }[]
   /** Clears the pending timer. */
   timeoutDispose: () => void
 }
@@ -255,6 +270,51 @@ export function apply(ctx: Context, config: Config): void {
       entry.resolve('cancelled')
     }
     pendingApprovals.clear()
+  })
+
+  // User questions forwarded to Telegram; settled by a button press or by the
+  // wrapped `ask` falling through to the Web dialog's answer.
+  const pendingQuestions = new Map<string, PendingQuestion>()
+  const disposePendingQuestions = (): void => {
+    for (const entry of pendingQuestions.values()) entry.timeoutDispose()
+    pendingQuestions.clear()
+  }
+  ctx.effect(() => disposePendingQuestions)
+
+  // User questions flow through a SINGLE UI provider, and the Web UI owns that
+  // seat. Instead of fighting for it, wrap `userQuestions.ask` — deferred until
+  // the service exists, because it may mount after this plugin — so every
+  // question is also surfaced in Telegram with option buttons; the first answer
+  // (a Telegram button or the Web dialog) wins.
+  ctx.inject(['userQuestions'], (scope) => {
+    if (allowedChatIds.length === 0) return
+    const questionService = scope.userQuestions as unknown as {
+      ask: (request: AskUserQuestionRequest) => Promise<AskUserQuestionAnswer>
+    }
+    const originalAsk = questionService.ask.bind(questionService)
+    questionService.ask = (request: AskUserQuestionRequest): Promise<AskUserQuestionAnswer> => {
+      if (request.questions.length === 0) return originalAsk(request)
+      const web = Promise.resolve(originalAsk(request))
+      const { promise, resolve, reject } = Promise.withResolvers<AskUserQuestionAnswer>()
+      let settled = false
+      const settle = (answer: AskUserQuestionAnswer): void => {
+        if (settled) return
+        settled = true
+        disposePendingQuestions()
+        resolve(answer)
+      }
+      const fail = (error: unknown): void => {
+        if (settled) return
+        settled = true
+        disposePendingQuestions()
+        reject(error)
+      }
+      void web.then(settle, fail)
+      void forwardQuestions(request, settle).catch((error: unknown) => {
+        ctx.logger.warn(`telegram-control: question forwarding failed: ${describeError(error)}`)
+      })
+      return promise
+    }
   })
 
   const logWarn = (error: unknown): void => {
@@ -501,11 +561,102 @@ export function apply(ctx: Context, config: Config): void {
     }
   }
 
+  /** Edit every forwarded question message to show the chosen answer. */
+  async function updateQuestionMessages(entry: PendingQuestion, suffix: string): Promise<void> {
+    for (const { chatId, messageId } of entry.sent) {
+      try {
+        await client.editMessageText(chatId, messageId, `${entry.text}\n\n${suffix}`)
+      } catch (error) {
+        ctx.logger.warn(`telegram-control: editing question message ${messageId} failed: ${describeError(error)}`)
+      }
+    }
+  }
+
+  /** Forward one user-question request to Telegram with option buttons. */
+  async function forwardQuestions(
+    request: AskUserQuestionRequest,
+    settle: (answer: AskUserQuestionAnswer) => void,
+  ): Promise<void> {
+    if (request.questions.length === 0) return
+    for (const item of request.questions) {
+      // Multi-select and free-text questions have no one-button answer; show
+      // them as notifications and let the Web dialog collect the answer.
+      const singleSelect = item.multiSelect !== true && (item.options?.length ?? 0) > 0
+      const token = randomUUID()
+      const options = item.options ?? []
+      const header = item.header !== undefined ? `${item.header}\n` : ''
+      const text = [
+        '❓ <b>Question</b>',
+        `Agent: ${describeAgentSafe(request.agent)}`,
+        `${header}${escapeHtml(item.question)}`,
+        item.detail !== undefined && item.detail !== '' ? `\n${escapeHtml(item.detail)}` : '',
+      ].filter(part => part !== '').join('\n')
+      const sent: { chatId: number; messageId: number }[] = []
+      const entry: PendingQuestion = {
+        resolve: settle,
+        text,
+        sent,
+        items: options.map(option => ({ id: item.id, label: option.label })),
+        timeoutDispose: () => { /* replaced below */ },
+      }
+      if (singleSelect) {
+        const timer = setTimeout(() => {
+          const current = pendingQuestions.get(token)
+          if (current === undefined) return
+          pendingQuestions.delete(token)
+          void updateQuestionMessages(current, '⏹️ <b>Cancelled</b> (no answer in time).').catch(logWarn)
+        }, approvalTimeoutMs)
+        entry.timeoutDispose = () => clearTimeout(timer)
+        pendingQuestions.set(token, entry)
+      }
+      try {
+        const keyboard = singleSelect ? {
+          inline_keyboard: [options.map((option, index) => ({
+            text: option.label,
+            callback_data: `question:${token}:${index}`,
+          }))],
+        } : undefined
+        for (const chatId of allowedChatIds) {
+          const result = await client.sendMessage(chatId, text, keyboard === undefined ? {} : { replyMarkup: keyboard })
+          sent.push({ chatId, messageId: result.message_id })
+        }
+      } catch (error) {
+        ctx.logger.warn(`telegram-control: forwarding question failed: ${describeError(error)}`)
+        if (pendingQuestions.has(token)) pendingQuestions.delete(token)
+      }
+    }
+  }
+
+  /** Agent label without a live agent (questions may lack one). */
+  function describeAgentSafe(agent: Agent | undefined): string {
+    return agent === undefined ? '<code>unknown</code>' : describeAgent(agent)
+  }
+
   /** Answer one inline-button press on a forwarded approval request. */
   async function handleCallbackQuery(query: TelegramCallbackQuery): Promise<void> {
     const data = query.data
     if (data === undefined) {
       await client.answerCallbackQuery(query.id, 'no action')
+      return
+    }
+    const question = parseQuestionCallback(data)
+    if (question !== undefined) {
+      const entry = pendingQuestions.get(question.token)
+      if (entry === undefined) {
+        await client.answerCallbackQuery(query.id, 'question already settled')
+        return
+      }
+      pendingQuestions.delete(question.token)
+      entry.timeoutDispose()
+      const item = entry.items[question.optionIndex]
+      if (item === undefined || question.optionIndex < 0) {
+        await client.answerCallbackQuery(query.id, 'invalid option')
+        return
+      }
+      const answer: AskUserQuestionAnswer = { answers: [{ id: item.id, selected: [item.label] }] }
+      await client.answerCallbackQuery(query.id, '已选择')
+      entry.resolve(answer)
+      void updateQuestionMessages(entry, `✅ 已选择: ${item.label}`).catch(logWarn)
       return
     }
     const parsed = parseApprovalCallback(data)

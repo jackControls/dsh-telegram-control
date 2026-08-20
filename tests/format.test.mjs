@@ -4,7 +4,7 @@
  */
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { escapeHtml, homeShorten, parseApprovalCallback, parseBotCommand, renderUptime, splitMessage, trimReasoning } from '../lib/format.js'
+import { escapeHtml, homeShorten, parseApprovalCallback, parseBotCommand, parseQuestionCallback, renderUptime, splitMessage, trimReasoning } from '../lib/format.js'
 
 test('escapeHtml escapes HTML metacharacters', () => {
   assert.equal(escapeHtml('<b>&"quoted"</b>'), '&lt;b&gt;&amp;&quot;quoted&quot;&lt;/b&gt;')
@@ -114,4 +114,16 @@ test('parseApprovalCallback rejects stale or malformed data', () => {
   assert.equal(parseApprovalCallback('approve:'), undefined)
   assert.equal(parseApprovalCallback('Approve:abc'), undefined)
   assert.equal(parseApprovalCallback(''), undefined)
+})
+
+test('parseQuestionCallback parses question buttons', () => {
+  assert.deepEqual(parseQuestionCallback('question:abc-123:0'), { token: 'abc-123', optionIndex: 0 })
+  assert.deepEqual(parseQuestionCallback('question:abc-123:2'), { token: 'abc-123', optionIndex: 2 })
+})
+
+test('parseQuestionCallback rejects stale or malformed data', () => {
+  assert.equal(parseQuestionCallback('question:abc-123'), undefined)
+  assert.equal(parseQuestionCallback('question::0'), undefined)
+  assert.equal(parseQuestionCallback('Question:abc:1'), undefined)
+  assert.equal(parseQuestionCallback('approve:abc'), undefined)
 })

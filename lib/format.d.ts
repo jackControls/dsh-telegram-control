@@ -46,3 +46,28 @@ export interface ParsedBotCommand {
  * @returns the parsed command, or `undefined` for a plain message.
  */
 export declare function parseBotCommand(text: string): ParsedBotCommand | undefined;
+/** One parsed approval-button callback: which choice and which request token. */
+export interface ParsedApprovalCallback {
+    /** Whether the button granted (`approve`) or denied (`reject`) the request. */
+    approve: boolean;
+    /** The random request token embedded in the button's callback_data. */
+    token: string;
+}
+/**
+ * Parse an inline-button callback for an approval request.
+ * @param data - the raw `callback_data` from a Telegram callback query.
+ * @returns the parsed choice, or `undefined` for stale or malformed data.
+ */
+export declare function parseApprovalCallback(data: string): ParsedApprovalCallback | undefined;
+/** One parsed question-button callback: the request token and the option index. */
+export interface ParsedQuestionCallback {
+    token: string;
+    /** Index into the question's `options` array that was pressed. */
+    optionIndex: number;
+}
+/**
+ * Parse an inline-button callback for a forwarded user question.
+ * @param data - the raw `callback_data` from a Telegram callback query.
+ * @returns the parsed choice, or `undefined` for stale or malformed data.
+ */
+export declare function parseQuestionCallback(data: string): ParsedQuestionCallback | undefined;
