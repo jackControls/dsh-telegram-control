@@ -151,7 +151,7 @@ const llmServer = http.createServer((req, res) => {
     }
     const payload = JSON.parse(body)
     llmRequests.push(payload)
-    const content = 'Hello from mock LLM \u2705'
+    const content = 'Hello <world> & everyone \u2705'
     // Only the CURRENT prompt's last user message may trigger the approval
     // tool call — matching against full history would loop forever.
     const messages = payload.messages ?? []
@@ -320,11 +320,12 @@ try {
       statusMsg.text.split('\n').join(' | '))
   }
 
-  ok = ok && await waitFor(child, bootLog, () => tgSent.some(m => m.text.includes('Hello from mock LLM')), 'the agent reply relay')
-  const replyMsg = tgSent.find(m => m.text.includes('Hello from mock LLM'))
+  ok = ok && await waitFor(child, bootLog, () => tgSent.some(m => m.text.includes('Hello &lt;world&gt;')), 'the agent reply relay')
+  const replyMsg = tgSent.find(m => m.text.includes('Hello &lt;world&gt;'))
   check('agent follow-up reply relayed to Telegram', replyMsg !== undefined)
   if (replyMsg) {
-    check('reply HTML is escaped', !/<\w/.test(replyMsg.text.replace(/&lt;|&gt;|&amp;|&quot;/g, '')))
+    check('reply HTML is escaped (raw <>& must not reach Telegram)', replyMsg !== undefined
+    && !/&(?![a-z]+;)|<(?![a-z]+)|(?<!&)>(?![a-z]+)/i.test(replyMsg.text))
   }
   check('reasoning (thinking) included in the relayed reply',
     tgSent.some(m => m.text.includes('\u{1F4AD} Let me think')))
@@ -354,7 +355,7 @@ try {
   check('agent selection by number works', tgSent.some(m => m.text.includes('Selected')))
   check('post-selection follow-up reached the agent', llmRequests.length >= llmBeforePhase2 + 1
     && JSON.stringify(llmRequests.at(-1)).includes('second followup'))
-  check('post-selection follow-up reply relayed', tgSent.filter(m => m.text.includes('Hello from mock LLM')).length >= 2)
+  check('post-selection follow-up reply relayed', tgSent.filter(m => m.text.includes('Hello &lt;world&gt;')).length >= 2)
   check('jobs reply delivered', tgSent.some(m => m.text.includes('No background jobs.')))
   const deniedMsg = tgSent.find(m => m.text.includes('Not authorized'))
   check('unauthorized chat gets the onboarding hint', deniedMsg !== undefined && deniedMsg.text.includes('999999999'))
@@ -396,9 +397,9 @@ try {
   ok = ok && await waitFor(child, bootLog, () => llmRequests.length >= llmBeforePhaseB + 1, 'the resumed follow-up reaching the mock LLM')
   check('phase B: plain message resumed the persisted session',
     JSON.stringify(llmRequests.at(-1) ?? {}).includes('resume me please'))
-  ok = ok && await waitFor(child, bootLog, () => tgSent.some(m => m.text.includes('Hello from mock LLM')), 'the resumed reply relay')
+  ok = ok && await waitFor(child, bootLog, () => tgSent.some(m => m.text.includes('Hello &lt;world&gt;')), 'the resumed reply relay')
   check('phase B: resumed reply relayed', tgSent.length >= tgSentBeforePhaseB + 1
-    && tgSent.some(m => m.text.includes('Hello from mock LLM')))
+    && tgSent.some(m => m.text.includes('Hello &lt;world&gt;')))
 
   // ================= phase C: approval round-trip =================
   // The resumed agent has the standard preset mounted, so it owns the bash

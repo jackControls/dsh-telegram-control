@@ -1079,11 +1079,14 @@ export function apply(ctx: Context, config: Config): void {
       if (byChat !== undefined) {
         // Only buffer output from OUR follow-up's own turn: a GUI-initiated
         // turn that runs while a reply is pending must not leak into it.
+        // Escape at the buffer boundary: the final send uses Telegram's HTML
+        // parse mode, and unescaped `&<>` in agent text is a 400 the flush
+        // would otherwise swallow silently.
         for (const entry of byChat.values()) {
-          if (entry.turn === event.data.turn) entry.buffer.push(text)
+          if (entry.turn === event.data.turn) entry.buffer.push(escapeHtml(text))
         }
       } else {
-        forwardWatching(text)
+        forwardWatching(escapeHtml(text))
       }
     } else if (event.type === 'turn/end') {
       const byChat = pendingBySession.get(session.id)
