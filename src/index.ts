@@ -27,7 +27,7 @@ import type { JobId, JobRegistry } from '@deepseek-ai/dsh-jobs'
 import { SessionId, type Session, type SessionEvent, type SessionHeader } from '@deepseek-ai/dsh-session'
 import type { SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
 import { foldSessionTitle } from '@deepseek-ai/dsh-session-title'
-import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval'
+import type { ApprovalOutcome, ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
 import type { AskUserQuestionAnswer, AskUserQuestionItem, AskUserQuestionRequest } from '@deepseek-ai/dsh-user-questions'
 import {
   TelegramApiError,
@@ -966,76 +966,99 @@ export function apply(ctx: Context, config: Config): void {
   // ---- live harness events ----
 
   // Approval requests: forward to every authorized chat with Allow/Reject
-  // buttons, and claim the request (prepended, so this runs before the Web
-  // UI answerer). Any Telegram-side failure falls back to `next()` so the
-  // Web UI dialog still gets the question instead of failing the ask closed.
+  // buttons AND let the rest of the answerer chain run — so the Web UI dialog
+  // still appears. The first answer wins: a Telegram button, the Web dialog,
+  // the turn's abort, or the timeout. When the chain contains no real answerer
+  // (it settles `unavailable` immediately) or Telegram cannot be reached,
+  // the other channel answers alone.
   ctx.on('approval/request', (req, next) => {
     if (allowedChatIds.length === 0) return next()
     if (req.signal !== undefined && req.signal.aborted) {
       return Promise.resolve<ApprovalOutcome>('cancelled')
     }
+    const web = Promise.resolve(next()).catch((error: unknown) => {
+      ctx.logger.warn(`telegram-control: Web approval answerer failed: ${describeError(error)}`)
+      return 'unavailable' as ApprovalOutcome
+    })
+    return forwardApproval(req, web)
+  }, true)
+
+  /** Forward one approval ask to Telegram and race it against the Web dialog. */
+  async function forwardApproval(
+    req: ApprovalRequest,
+    web: Promise<ApprovalOutcome>,
+  ): Promise<ApprovalOutcome> {
     const token = randomUUID()
     const sent: { chatId: number; messageId: number }[] = []
     const { promise, resolve } = Promise.withResolvers<ApprovalOutcome>()
+    let settled = false
+    const settle = (outcome: ApprovalOutcome): void => {
+      if (settled) return
+      settled = true
+      const current = pendingApprovals.get(token)
+      if (current !== undefined) {
+        pendingApprovals.delete(token)
+        current.timeoutDispose()
+      }
+      resolve(outcome)
+    }
     const entry: PendingApproval = {
-      resolve,
+      resolve: settle,
       text: '',
       sent,
       timeoutDispose: () => { /* replaced below */ },
     }
     const timer = setTimeout(() => {
-      const current = pendingApprovals.get(token)
-      if (current === undefined) return
-      pendingApprovals.delete(token)
-      current.resolve('cancelled')
-      void updateApprovalMessages(current, '⏹️ <b>Cancelled</b> (no answer in time).').catch(logWarn)
+      settle('cancelled')
+      void updateApprovalMessages(entry, '⏹️ <b>Cancelled</b> (no answer in time).').catch(logWarn)
     }, approvalTimeoutMs)
     entry.timeoutDispose = () => clearTimeout(timer)
     pendingApprovals.set(token, entry)
     if (req.signal !== undefined) {
-      req.signal.addEventListener('abort', () => {
-        const current = pendingApprovals.get(token)
-        if (current === undefined) return
-        pendingApprovals.delete(token)
-        current.timeoutDispose()
-        current.resolve('cancelled')
-      }, { once: true })
+      req.signal.addEventListener('abort', () => settle('cancelled'), { once: true })
     }
-    return (async () => {
-      try {
-        const text = [
-          '🔒 <b>Approval required</b>',
-          `Agent: ${describeAgent(req.agent)}`,
-          `Tool: <code>${escapeHtml(req.toolName)}</code>`,
-          req.reason !== undefined && req.reason !== ''
-            ? `Reason: ${escapeHtml(req.reason)}`
-            : 'Reason: (none given)',
-        ].join('\n')
-        entry.text = text
-        const keyboard = {
-          inline_keyboard: [[
-            { text: '✅ Allow once', callback_data: `approve:${token}` },
-            { text: '❌ Reject', callback_data: `reject:${token}` },
-          ]],
-        }
-        for (const chatId of allowedChatIds) {
-          const result = await client.sendMessage(chatId, text, { replyMarkup: keyboard })
-          sent.push({ chatId, messageId: result.message_id })
-        }
-        ctx.logger.info(`telegram-control: approval request ${token.slice(0, 8)} for ${req.toolName} forwarded`)
-        return await promise
-      } catch (error) {
-        const current = pendingApprovals.get(token)
-        if (current !== undefined) {
-          pendingApprovals.delete(token)
-          current.timeoutDispose()
-          current.resolve('cancelled')
-        }
-        ctx.logger.warn(`telegram-control: forwarding approval failed, delegating: ${describeError(error)}`)
-        return next()
+    try {
+      const text = [
+        '🔒 <b>Approval required</b>',
+        `Agent: ${describeAgent(req.agent)}`,
+        `Tool: <code>${escapeHtml(req.toolName)}</code>`,
+        req.reason !== undefined && req.reason !== ''
+          ? `Reason: ${escapeHtml(req.reason)}`
+          : 'Reason: (none given)',
+      ].join('\n')
+      entry.text = text
+      const keyboard = {
+        inline_keyboard: [[
+          { text: '✅ Allow once', callback_data: `approve:${token}` },
+          { text: '❌ Reject', callback_data: `reject:${token}` },
+        ]],
       }
-    })()
-  }, true)
+      for (const chatId of allowedChatIds) {
+        const result = await client.sendMessage(chatId, text, { replyMarkup: keyboard })
+        sent.push({ chatId, messageId: result.message_id })
+      }
+      ctx.logger.info(`telegram-control: approval request ${token.slice(0, 8)} for ${req.toolName} forwarded`)
+    } catch (error) {
+      pendingApprovals.delete(token)
+      entry.timeoutDispose()
+      ctx.logger.warn(`telegram-control: forwarding approval failed, delegating to the Web dialog: ${describeError(error)}`)
+      return web
+    }
+    // If a real Web answerer exists, its outcome settles this race too; an
+    // immediate `unavailable` means the chain had no answerer, so Telegram is
+    // the sole channel and keeps waiting for a button.
+    void web.then((outcome) => {
+      if (outcome === 'unavailable') return
+      settle(outcome)
+      const suffix = outcome === 'allowed-once'
+        ? '✅ <b>Approved</b> in the Web UI.'
+        : outcome === 'rejected'
+          ? '❌ <b>Rejected</b> in the Web UI.'
+          : '⏹️ <b>Cancelled</b>.'
+      void updateApprovalMessages(entry, suffix).catch(logWarn)
+    })
+    return promise
+  }
 
   // A session appearing after this plugin mounted (GUI resume, new chat)
   // carries its stored `session/title` events in its seed, which never replay
