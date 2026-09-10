@@ -253,8 +253,15 @@ export function apply(ctx: Context, config: Config): void {
   // covers later appearances, and the conversation helpers re-fold the log as a
   // fallback, so a session whose title predates this plugin is still named.
   const titles = new Map<SessionId, string>()
+  // Session history moved from the `events` property to `snapshotEvents()` in
+  // newer Harness releases. Support both while this plugin remains compatible
+  // with the older peer dependency range.
+  const sessionEvents = (session: Session): readonly SessionEvent[] => {
+    const current = session as Session & { snapshotEvents?: () => readonly SessionEvent[] }
+    return current.snapshotEvents === undefined ? session.events : current.snapshotEvents()
+  }
   const seedTitle = (session: Session): void => {
-    const snapshot = foldSessionTitle(session.events)
+    const snapshot = foldSessionTitle(sessionEvents(session))
     if (snapshot !== undefined) titles.set(session.id, snapshot.title)
   }
   for (const session of ctx.sessions.list()) seedTitle(session)
@@ -382,7 +389,7 @@ export function apply(ctx: Context, config: Config): void {
   /** The title of a conversation entry, live-folded or read from storage. */
   async function conversationTitle(entry: ConversationEntry): Promise<string | undefined> {
     if (entry.agent !== undefined) {
-      return titles.get(entry.sessionId) ?? foldSessionTitle(entry.agent.session.events)?.title
+      return titles.get(entry.sessionId) ?? foldSessionTitle(sessionEvents(entry.agent.session))?.title
     }
     return storedTitle(entry.sessionId)
   }
@@ -438,7 +445,7 @@ export function apply(ctx: Context, config: Config): void {
 
   /** The display name of an agent: its session title, or a short id when untitled. */
   function agentDisplay(agent: Agent): { name: string; hasTitle: boolean } {
-    const title = titles.get(agent.session.id) ?? foldSessionTitle(agent.session.events)?.title
+    const title = titles.get(agent.session.id) ?? foldSessionTitle(sessionEvents(agent.session))?.title
     if (title !== undefined) return { name: title, hasTitle: true }
     const id = agent.id
     return { name: id.length > 18 ? `${id.slice(0, 15)}…` : id, hasTitle: false }
