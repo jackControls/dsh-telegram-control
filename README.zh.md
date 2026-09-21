@@ -138,6 +138,24 @@ session 标题（`session/title` 事件——自动总结或你手动改的名�
 - 插件不会放大 harness 的任何能力——它只能做你的 harness 本身能做的事，harness 的
   sandbox / 审批策略对 agent 执行的工作依然生效。
 
+## 兼容性、权限与验证
+
+- **Node.js**：`>=22`（在 `engines` 中声明）。
+- **DeepSeek Harness**：`>=0.1.0-rc.6`（在 `peerDependencies` 中声明）。已对 `dsh` 0.1.0-rc.6（npm CLI）
+  与 0.1.5-rc.2（DSH Desktop 内置版本）做端到端验证——插件同时兼容两代持久化 API
+  （`inspect()` 或 `open(id,'read')`）、两种会话历史访问器（`events` 或 `snapshotEvents()`）以及
+  两种 `list()` 返回结构。
+- **运行时依赖**：仅一个 `@deepseek-ai/schemastery`（配置校验）。其余都是 `peerDependency`，
+  从宿主安装中解析；没有 postinstall 脚本，也没有内置二进制。
+- **权限 / 外部服务**：插件访问网络（Telegram Bot API over HTTPS）、使用凭据（来自
+  `config.token` 或 `$DSH_TELEGRAM_TOKEN` 的 bot token），并且只写一个状态文件
+  （`$DSH_HOME/telegram-control-state.json`，记录每个 chat 选中的会话）。不读写其它本地文件。
+- **失败边界**：Telegram API 不可达时退避重试；遇到 409（有别的 poller）停掉当前 poller；
+  Telegram 收不到审批时 Web 对话框仍可处理。插件卸载会中止轮询并清理所有待处理提示。
+- **验证证据**：`npm test`（24 项单元测试）+ `node tests/smoke.mjs`（两阶段端到端：在一次性
+  profile 中安装插件、启动真实 `dsh web`，断言 live agent 回传、暂停会话恢复、审批闭环、
+  提问闭环，共 32 项检查）。用 `DSH_CLI` 可指定要验证的 harness 构建。
+
 ## 开发
 
 ```sh

@@ -12,6 +12,7 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "declaration": true,
+    "declarationDir": "lib/types",
     "declarationMap": false,
     "sourceMap": false,
     "allowImportingTsExtensions": true,

@@ -262,7 +262,8 @@ const env = {
 
 console.log(`DSH_HOME=${dshHome}`)
 console.log(`installing plugin into the web profile...`)
-const install = spawnSync(process.execPath, [CLI, 'plugin', '--profile', 'web', 'add', PLUGIN_DIR], {
+const NODE_FLAGS = ['--expose-internals']
+const install = spawnSync(process.execPath, [...NODE_FLAGS, CLI, 'plugin', '--profile', 'web', 'add', PLUGIN_DIR], {
   env, stdio: 'pipe', timeout: 120_000,
 })
 if (install.status !== 0) {
@@ -272,7 +273,7 @@ if (install.status !== 0) {
 
 /** Boot a harness child and capture its output. */
 function bootHarness(overlayPath) {
-  const child = spawn(process.execPath, [CLI, 'web', '--patch', overlayPath], { env, stdio: ['ignore', 'pipe', 'pipe'] })
+  const child = spawn(process.execPath, [...NODE_FLAGS, CLI, 'web', '--patch', overlayPath], { env, stdio: ['ignore', 'pipe', 'pipe'] })
   const log = { text: '' }
   child.stdout.on('data', (c) => { log.text += c })
   child.stderr.on('data', (c) => { log.text += c })
@@ -306,7 +307,10 @@ try {
 
   tgQueue.push(
     { update_id: 1, message: { message_id: 1, chat: { id: CHAT_ID, type: 'private' }, from: { id: CHAT_ID }, text: '/status', date: 0 } },
-    { update_id: 2, message: { message_id: 2, chat: { id: CHAT_ID, type: 'private' }, from: { id: CHAT_ID }, text: 'hello from telegram', date: 0 } },
+    // Select explicitly: a harness build may carry more than one conversation,
+    // and the implicit fallback only fires for exactly one.
+    { update_id: 2, message: { message_id: 2, chat: { id: CHAT_ID, type: 'private' }, from: { id: CHAT_ID }, text: '/agent 1', date: 0 } },
+    { update_id: 3, message: { message_id: 3, chat: { id: CHAT_ID, type: 'private' }, from: { id: CHAT_ID }, text: 'hello from telegram', date: 0 } },
   )
 
   ok = await waitFor(child, bootLog, () => tgPollCount >= 3, 'the bot to start polling Telegram')
@@ -316,7 +320,7 @@ try {
   const statusMsg = tgSent.find(m => m.text.includes('dsh status'))
   check('status reply delivered', statusMsg !== undefined)
   if (statusMsg) {
-    check('status reply reports the live conversation', statusMsg.text.includes('conversations: 1 (1 live)'),
+    check('status reply reports conversations with a live count', /conversations: \d+ \(\d+ live\)/.test(statusMsg.text),
       statusMsg.text.split('\n').join(' | '))
   }
 

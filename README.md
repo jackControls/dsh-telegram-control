@@ -146,6 +146,28 @@ rename, the same names the Web UI shows); the bracketed workspace is the session
 - The plugin does not widen any harness capability — it can only do what your running harness can
   do, and the harness's own sandbox/approval policies still apply to agent work.
 
+## Compatibility, permissions, and verification
+
+- **Node.js**: `>=22` (declared in `engines`).
+- **DeepSeek Harness**: `>=0.1.0-rc.6` (declared in `peerDependencies`). Verified end to end against
+  both `dsh` 0.1.0-rc.6 (npm CLI) and 0.1.5-rc.2 (the version bundled by DSH Desktop) — the plugin
+  reads either persistence generation (`inspect()` or `open(id,'read')`), either session-history
+  accessor (`events` or `snapshotEvents()`), and either `list()` shape.
+- **Runtime dependencies**: one — `@deepseek-ai/schemastery` (config validation). Everything else
+  is a `peerDependency` resolved from the host installation; there are no postinstall scripts and
+  no bundled binaries.
+- **Permissions / external services**: the plugin reaches the network (Telegram Bot API over
+  HTTPS), uses a credential (the bot token from `config.token` or `$DSH_TELEGRAM_TOKEN`), and
+  writes exactly one state file (`$DSH_HOME/telegram-control-state.json`) recording which
+  conversation each chat selected. It does not read or write any other local file.
+- **Failure bounds**: an unreachable Telegram API backs off and retries; a 409 (another poller)
+  stops that poller; if Telegram cannot receive an approval the Web UI dialog still answers it.
+  Unloading the plugin aborts polling and clears every pending prompt.
+- **Verification evidence**: `npm test` (24 unit tests) plus `node tests/smoke.mjs`, a two-phase
+  end-to-end run that installs the plugin into a disposable profile, boots a real `dsh web`, and
+  asserts the live-agent relay, paused-session resume, approval round-trip, and question
+  round-trip (32 checks). Set `DSH_CLI` to test a specific harness build.
+
 ## Development
 
 ```sh

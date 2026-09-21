@@ -21,7 +21,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { createUserMessage, type AssistantMessage, type MessageId } from '@deepseek-ai/dsh-llm'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { resolveSessionPreset, type AgentPresets } from '@deepseek-ai/dsh-agent-presets'
+import type { AgentPresets } from '@deepseek-ai/dsh-agent-presets'
 import type { AgentDefaultModelConfig } from '@deepseek-ai/dsh-agent-default-model'
 import type { JobId, JobRegistry } from '@deepseek-ai/dsh-jobs'
 import { SessionId, type Session, type SessionEvent, type SessionHeader } from '@deepseek-ai/dsh-session'
@@ -175,6 +175,83 @@ function describeError(error: unknown): string {
     return String(error)
   } catch {
     return '<unprintable error>'
+  }
+}
+
+/**
+ * The preset a session actually runs: its creation header, overridden by the
+ * last logged `agent-preset/selected` event. Inlined rather than imported —
+ * newer Harness releases dropped the `resolveSessionPreset` helper, and an
+ * import of a missing binding fails the whole plugin at module link time.
+ * @param session - the session's header and event log.
+ * @returns the preset id, or `undefined` when none is recorded.
+ */
+function resolveSessionPresetOf(session: {
+  header: SessionHeader
+  events: readonly SessionEvent[]
+}): string | undefined {
+  for (let index = session.events.length - 1; index >= 0; index -= 1) {
+    const event = session.events[index] as { type: string; data?: { agentPreset?: string } } | undefined
+    if (event?.type === 'agent-preset/selected') {
+      const selected = event.data?.agentPreset
+      if (selected !== undefined) return selected
+    }
+  }
+  return session.header.agentPreset
+}
+
+/** One stored session's header and full event log across persistence API generations. */
+interface StoredSession {
+  header: SessionHeader
+  events: readonly SessionEvent[]
+}
+
+/** The header of one `list()` entry: `{ header, revision, … }` (newer) or a bare header (older). */
+function listedHeader(item: unknown): SessionHeader | undefined {
+  const record = item as { header?: SessionHeader; id?: SessionId } | undefined
+  if (record === undefined) return undefined
+  if (record.header !== undefined && record.header.id !== undefined) return record.header
+  if (record.id !== undefined) return record as unknown as SessionHeader
+  return undefined
+}
+
+/**
+ * Read one stored session through whichever persistence API the running
+ * harness exposes: the newer `open(id, 'read')` handle, or the older
+ * `inspect(id)` snapshot. Both return the session header and its event log.
+ * @param sessionId - the stored session to read.
+ * @param service - the persistence service, when mounted.
+ * @returns the header and events, or `undefined` when the session is unreadable.
+ */
+async function readStoredSession(
+  sessionId: SessionId,
+  service: SessionPersistence,
+): Promise<StoredSession | undefined> {
+  const legacy = service as unknown as {
+    inspect?: (id: SessionId) => Promise<{ meta: SessionHeader; events: readonly SessionEvent[] }>
+  }
+  if (typeof legacy.inspect === 'function') {
+    const inspected = await legacy.inspect(sessionId)
+    return { header: inspected.meta, events: inspected.events }
+  }
+  const modern = service as unknown as {
+    open?: (id: SessionId, access: 'read' | 'write', options?: { signal?: AbortSignal }) => Promise<{
+      header: SessionHeader
+      read: (from: number, to?: number, options?: { signal?: AbortSignal }) => Promise<{ events: readonly SessionEvent[] }>
+      close: () => void | Promise<void>
+    }>
+  }
+  if (typeof modern.open !== 'function') return undefined
+  const handle = await modern.open(sessionId, 'read', {})
+  try {
+    const read = await handle.read(0, undefined, {})
+    return { header: handle.header, events: read.events ?? [] }
+  } finally {
+    try {
+      await handle.close()
+    } catch {
+      // Closing a read handle is best-effort: the read already succeeded.
+    }
   }
 }
 
@@ -346,8 +423,8 @@ export function apply(ctx: Context, config: Config): void {
     const service = persistence()
     if (service === undefined) return undefined
     try {
-      const inspected = await service.inspect(sessionId)
-      const snapshot = foldSessionTitle(inspected.events)
+      const stored = await readStoredSession(sessionId, service)
+      const snapshot = stored === undefined ? undefined : foldSessionTitle(stored.events)
       if (snapshot !== undefined) {
         storedTitles.set(sessionId, snapshot.title)
         return snapshot.title
@@ -372,7 +449,9 @@ export function apply(ctx: Context, config: Config): void {
       try {
         const stored = await service.list()
         const liveIds = new Set(agents.map(agent => agent.session.id))
-        for (const header of stored) {
+        for (const item of stored) {
+          const header = listedHeader(item)
+          if (header === undefined) continue
           // Subagent children are work products, not conversations.
           if (header.origin === 'subagent') continue
           if (liveIds.has(header.id)) continue
@@ -405,8 +484,8 @@ export function apply(ctx: Context, config: Config): void {
       let presetId: string | undefined
       if (presets !== undefined) {
         try {
-          const inspected = await service.inspect(sessionId)
-          presetId = resolveSessionPreset({ header: inspected.meta, events: inspected.events })
+          const stored = await readStoredSession(sessionId, service)
+          if (stored !== undefined) presetId = resolveSessionPresetOf(stored)
         } catch (error) {
           ctx.logger.warn(`telegram-control: preset resolution for ${sessionId} failed: ${describeError(error)}`)
         }
